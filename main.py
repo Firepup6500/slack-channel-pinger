@@ -32,45 +32,54 @@ async def check(
     text: str,
     skip_db: bool = False,
 ) -> bool:
-    if chan_name == "directmessage" or (
-        chan_name.startswith("mpdm-") and "--" in chan_name
-    ):
-        async with ClientSession(
-            headers={"Content-type": "application/json"}
-        ) as session:
-            await session.post(
-                unquote(url),
-                json={"text": "I don't work in DMs, sorry!"},
-            )
-        return False
-    if text.lower() != "false" and env["OWNER_ID"] == user_id:
-        return True
-    if not skip_db and await db.get(chan_id):
-        return True
     try:
-        info = await app.client.conversations_info(channel=chan_id)
-        if info["channel"]["creator"] != user_id:
+        if chan_name == "directmessage" or (
+            chan_name.startswith("mpdm-") and "--" in chan_name
+        ):
+            async with ClientSession(
+                headers={"Content-type": "application/json"}
+            ) as session:
+                await session.post(
+                    unquote(url),
+                    json={"text": "I don't work in DMs, sorry!"},
+                )
+            return False
+        if text.lower() != "false" and env["OWNER_ID"] == user_id:
+            return True
+        vals = await db.get(chan_id)
+        if not skip_db and vals and vals["unlocked"]:
+            return True
+        try:
+            info = {}
+            patched = False
+            if vals and vals.get("owner"):
+                patched = True
+                info["channel"] = {"creator": vals["owner"]}
+            else:
+                info = await app.client.conversations_info(channel=chan_id)
+            if info["channel"]["creator"] != user_id:
+                async with ClientSession(
+                    headers={"Content-type": "application/json"}
+                ) as session:
+                    await session.post(
+                        unquote(url),
+                        json={
+                            "text": f"You need to own the channel to use me! (<@{info['channel']['creator']}> {'created' if not patched else 'owns'} this channel)"
+                        },
+                    )
+                return False
+            return True
+        except SlackApiError:
             async with ClientSession(
                 headers={"Content-type": "application/json"}
             ) as session:
                 await session.post(
                     unquote(url),
                     json={
-                        "text": f"You need to have created the channel to use me! (<@{info['channel']['creator']}> created this channel)"
+                        "text": "Sorry buddy, but I can't ping private channels without checking who owns the channel first! You'll need to add me to this channel before I can work here."
                     },
                 )
             return False
-    except SlackApiError:
-        async with ClientSession(
-            headers={"Content-type": "application/json"}
-        ) as session:
-            await session.post(
-                unquote(url),
-                json={
-                    "text": "Sorry buddy, but I can't ping private channels without checking who owns the channel first! You'll need to add me to this channel before I can work here."
-                },
-            )
-        return False
     except Exception:
         print(format_exc())
         async with ClientSession(
@@ -103,6 +112,25 @@ async def pingChannel(data):
         )
 
 
+async def pingHere(data):
+    if not await check(
+        data["user_id"],
+        data["channel_id"],
+        data["channel_name"],
+        data["response_url"],
+        data["text"],
+    ):
+        return
+    async with ClientSession(headers={"Content-type": "application/json"}) as session:
+        await session.post(
+            unquote(data["response_url"]),
+            json={
+                "text": f"<!here> pinged by <@{data['user_id']}>",
+                "response_type": "in_channel",
+            },
+        )
+
+
 async def lockChannel(data):
     if not await check(
         data["user_id"],
@@ -113,7 +141,8 @@ async def lockChannel(data):
         True,
     ):
         return
-    if not await db.get(data["channel_id"]):
+    vals = await db.get(data["channel_id"])
+    if not vals or not vals["unlocked"]:
         async with ClientSession(
             headers={"Content-type": "application/json"}
         ) as session:
@@ -124,7 +153,10 @@ async def lockChannel(data):
                 },
             )
         return
-    await db.set(data["channel_id"], False)
+    if not vals:
+        vals = {}
+    vals["unlocked"] = False
+    await db.set(data["channel_id"], vals)
     async with ClientSession(headers={"Content-type": "application/json"}) as session:
         await session.post(
             unquote(data["response_url"]),
@@ -143,7 +175,8 @@ async def unlockChannel(data):
         data["text"],
     ):
         return
-    if await db.get(data["channel_id"]):
+    vals = await db.get(data["channel_id"])
+    if vals and vals["unlocked"]:
         async with ClientSession(
             headers={"Content-type": "application/json"}
         ) as session:
@@ -154,7 +187,10 @@ async def unlockChannel(data):
                 },
             )
         return
-    await db.set(data["channel_id"], True)
+    if not vals:
+        vals = {}
+    vals["unlocked"] = True
+    await db.set(data["channel_id"], vals)
     async with ClientSession(headers={"Content-type": "application/json"}) as session:
         await session.post(
             unquote(data["response_url"]),
@@ -162,6 +198,18 @@ async def unlockChannel(data):
                 "text": "This channel is now unlocked!",
             },
         )
+
+
+async def setOwner(data):
+    if not await check(
+        data["user_id"],
+        data["channel_id"],
+        data["channel_name"],
+        data["response_url"],
+        data["text"],
+        True,
+    ):
+        return
 
 
 @quartApp.route(
@@ -184,6 +232,10 @@ quartApp.route(
     "/unlock/",
     methods=["GET", "OPTIONS", "PUT", "HEAD", "DELETE", "CONNECT", "TRACE", "PATCH"],
 )(invalid)
+quartApp.route(
+    "/here/",
+    methods=["GET", "OPTIONS", "PUT", "HEAD", "DELETE", "CONNECT", "TRACE", "PATCH"],
+)(invalid)
 
 
 @quartApp.route("/up/", methods=["GET"])
@@ -200,6 +252,19 @@ async def ping():
         data[v[0]] = v[1]
 
     Thread(target=aRun, args=(pingChannel(data),), daemon=True).start()
+
+    return ""
+
+
+@quartApp.route("/here/", methods=["POST"])
+async def here():
+    rawData = await request.get_data()
+    data = {}
+    for a in rawData.decode().split("&"):
+        v = a.split("=")
+        data[v[0]] = v[1]
+
+    Thread(target=aRun, args=(pingHere(data),), daemon=True).start()
 
     return ""
 
