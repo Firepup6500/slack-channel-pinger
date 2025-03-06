@@ -15,7 +15,7 @@ db = asyncSql("database.db")
 quartApp = Quart(__name__)
 load_dotenv()
 
-for requiredVar in ["SLACK_BOT_TOKEN", "CLIENT_ID", "CLIENT_SECRET", "OWNER_ID"]:
+for requiredVar in ["SLACK_BOT_TOKEN", "OWNER_ID"]:
     if not env.get(requiredVar):
         raise ValueError(
             f'Missing required environment variable "{requiredVar}". Please create a .env file in the same directory as this script and define the missing variable.'
