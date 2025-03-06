@@ -210,6 +210,31 @@ async def setOwner(data):
         True,
     ):
         return
+    text = unquote(data["text"]).strip()
+    if not (text.startswith("<@") and text.endswith(">") and "|" in text):
+        async with ClientSession(
+            headers={"Content-type": "application/json"}
+        ) as session:
+            print(text, flush=True)
+            await session.post(
+                unquote(data["response_url"]),
+                json={
+                    "text": "That's not a user ping... Please submit this command in the format of `/set-owner @someuser`",
+                },
+            )
+        return
+    vals = await db.get(data["channel_id"])
+    if not vals:
+        vals = {}
+    vals["owner"] = text.split("@")[1].split("|")[0]
+    await db.set(data["channel_id"], vals)
+    async with ClientSession(headers={"Content-type": "application/json"}) as session:
+        await session.post(
+            unquote(data["response_url"]),
+            json={
+                "text": f"{text} now owns this channel!",
+            },
+        )
 
 
 @quartApp.route(
@@ -234,6 +259,10 @@ quartApp.route(
 )(invalid)
 quartApp.route(
     "/here/",
+    methods=["GET", "OPTIONS", "PUT", "HEAD", "DELETE", "CONNECT", "TRACE", "PATCH"],
+)(invalid)
+quartApp.route(
+    "/set/",
     methods=["GET", "OPTIONS", "PUT", "HEAD", "DELETE", "CONNECT", "TRACE", "PATCH"],
 )(invalid)
 
@@ -265,6 +294,19 @@ async def here():
         data[v[0]] = v[1]
 
     Thread(target=aRun, args=(pingHere(data),), daemon=True).start()
+
+    return ""
+
+
+@quartApp.route("/set/", methods=["POST"])
+async def set():
+    rawData = await request.get_data()
+    data = {}
+    for a in rawData.decode().split("&"):
+        v = a.split("=")
+        data[v[0]] = v[1]
+
+    Thread(target=aRun, args=(setOwner(data),), daemon=True).start()
 
     return ""
 
