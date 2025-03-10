@@ -11,6 +11,14 @@ from fpsql import asyncSql
 from traceback import format_exc
 from slack_sdk.errors import SlackApiError
 
+__p = print
+
+
+def print(*args, **kwargs):
+    kwargs["flush"] = True
+    __p(*args, **kwargs)
+
+
 db = asyncSql("database.db")
 quartApp = Quart(__name__)
 load_dotenv()
@@ -47,7 +55,7 @@ async def check(
         if text.lower() != "false" and env["OWNER_ID"] == user_id:
             return True
         vals = await db.get(chan_id)
-        if not skip_db and vals and vals["unlocked"]:
+        if not skip_db and vals and vals.get("unlocked"):
             return True
         try:
             info = {}
